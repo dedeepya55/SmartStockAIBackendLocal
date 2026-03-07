@@ -426,7 +426,7 @@ exports.checkMisplacedProducts = async (req, res) => {
         // Send notifications for misplaced products
         if (result.status === "INCORRECT") {
           await User.updateMany(
-            {},
+            { role: { $in: ["worker", "manager"] } },
             {
               $push: {
                 notifications: {
