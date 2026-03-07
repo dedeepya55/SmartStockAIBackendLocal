@@ -9,9 +9,6 @@ const { spawn } = require("child_process");
 const { exec } = require("child_process");
 
 
-const axios = require("axios");
-const FormData = require("form-data");
-
 
 
 
@@ -286,47 +283,61 @@ exports.updateProductBySKU = async (req, res) => {
 
 exports.productQualityCheck = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ message: "No image uploaded" });
-
-    const imagePath = req.file.path;
-    const formData = new FormData();
-    formData.append("file", fs.createReadStream(imagePath));
-
-    const response = await axios.post(
-      `${process.env.AI_SERVICE_URL_productDefect}/defect`,
-      formData,
-      { headers: formData.getHeaders() }
-    );
-
-    const result = JSON.parse(response.data.response); // your API wraps JSON in "response" string
-
-    console.log("AI API result:", result); // log full result for debugging
-
-    // Send notifications if defective
-    if (result.status === "NOT_OK") {
-      await User.updateMany(
-        { role: { $in: ["worker", "manager"] } },
-        {
-          $push: {
-            notifications: {
-              message: "❌ Defective product detected",
-              type: "DEFECT",
-            },
-          },
-        }
-      );
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded" });
     }
 
-   res.json({
-  status: result.status,
-  message: result.message,
-  outputImage:
-    process.env.AI_SERVICE_URL_productDefect+
-    result.output_image_path,
-});
+    const imagePath = req.file.path;
+
+    const scriptPath = path.join(
+      __dirname,
+      "..",
+      "SMARTSTOCKAI-AI",
+      "infer.py"
+    );
+
+    const python = spawn("python", [scriptPath, imagePath]);
+
+    let output = "";
+    let errorOutput = "";
+
+    python.stdout.on("data", (data) => {
+      output += data.toString();
+    });
+
+    python.stderr.on("data", (data) => {
+      errorOutput += data.toString();
+    });
+
+  python.on("close", async () => {
+
+  if (errorOutput) {
+    console.log("Python warnings:", errorOutput);
+  }
+
+  try {
+
+    const lines = output.trim().split("\n");
+    const jsonLine = lines[lines.length - 1];
+
+    const result = JSON.parse(jsonLine);
+
+    console.log("AI result:", result);
+
+    res.json(result);
+
   } catch (err) {
-    console.error("AI API error:", err.response?.data || err.message);
-    res.status(500).json({ message: "AI API call failed", error: err.message });
+
+    console.error("JSON Parse Error:", err);
+    console.log("Python raw output:", output);
+
+    res.status(500).json({ message: "Invalid AI response" });
+  }
+
+});
+} catch (err) {
+    console.error("Server error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -347,69 +358,92 @@ exports.deleteNotification = async (req, res) => {
 
   res.json({ message: "Notification deleted" });
 };
+
+
 exports.checkMisplacedProducts = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+    if (!req.file)
+      return res.status(400).json({ error: "No image uploaded" });
 
-    const imagePath = req.file.path; // uploaded image path
-    const resultsFolder = path.join(__dirname, "..", "SMARTSTOCK_AI2", "results");
+    const imagePath = req.file.path;
 
-    // Ensure results folder exists
-    if (!fs.existsSync(resultsFolder)) fs.mkdirSync(resultsFolder, { recursive: true });
-
-    // Prepare form-data
-    const formData = new FormData();
-    formData.append("file", fs.createReadStream(imagePath));
-
-    // Send image to your Render AI endpoint
-    const response = await axios.post(
-      `${process.env.AI_SERVICE_URL_arrangementCheck}/arrangement`,
-      formData,
-      { headers: formData.getHeaders() }
+    const scriptPath = path.join(
+      __dirname,
+      "..",
+      "SMARTSTOCK_AI2",
+      "run_full_pipeline.py"
     );
 
-    const jsonData = response.data; // your API returns JSON with status & output_image_path
+    // Spawn Python process
+    const python = spawn("python", [scriptPath, "--image", imagePath]);
 
-    // Save annotated image locally (like Python script)
-    const annotatedImageName = "annotated_" + path.basename(imagePath);
-    const annotatedImagePath = path.join(resultsFolder, annotatedImageName);
+    let stdoutData = "";
+    let stderrData = "";
 
-    // Download output image from API if provided
-    if (jsonData.output_image_path) {
-      const imageResponse = await axios.get(jsonData.output_image_path, {
-        responseType: "arraybuffer",
-      });
-      fs.writeFileSync(annotatedImagePath, imageResponse.data);
-    }
+    python.stdout.on("data", (data) => {
+      stdoutData += data.toString();
+    });
 
-    // 🔔 Notification logic
-    if (jsonData.status === "INCORRECT") {
-      await User.updateMany(
-        {}, // send to all users
-        {
-          $push: {
-            notifications: {
-              message: "⚠️ Misplaced product detected in warehouse",
-              type: "MISPLACED",
-              createdAt: new Date(),
-            },
-          },
+    python.stderr.on("data", (data) => {
+      stderrData += data.toString();
+    });
+
+    python.on("close", async (code) => {
+      // Log any Python warnings (non-fatal)
+      if (stderrData) console.log("Python warnings/errors:", stderrData);
+
+      try {
+        // Extract last line containing JSON
+        const lines = stdoutData.trim().split("\n");
+        const jsonLine = lines.reverse().find((line) => {
+          line = line.trim();
+          return line.startsWith("{") && line.endsWith("}");
+        });
+
+        if (!jsonLine)
+          return res.status(500).json({
+            message: "AI response missing or invalid JSON",
+            rawOutput: stdoutData,
+          });
+
+        const result = JSON.parse(jsonLine);
+        console.log("AI arrangement result:", result);
+
+        // Send notifications for misplaced products
+        if (result.status === "INCORRECT") {
+          await User.updateMany(
+            {},
+            {
+              $push: {
+                notifications: {
+                  message: "⚠️ Misplaced product detected in warehouse",
+                  type: "MISPLACED",
+                  createdAt: new Date(),
+                },
+              },
+            }
+          );
         }
-      );
-    }
 
-    // Send same structure to frontend
-    res.json({
-      message: "Image processed successfully",
-      image: `/results/${annotatedImageName}`, // same as Python version
-      results: jsonData,
+        // Return response
+        return res.json({
+          image: result.output_image_path,
+          results: result,
+        });
+      } catch (parseError) {
+        console.error("JSON Parse Error:", parseError);
+        console.log("Python raw output:", stdoutData);
+        return res.status(500).json({
+          message: "Failed to parse AI response",
+          rawOutput: stdoutData,
+        });
+      }
     });
   } catch (err) {
-    console.error("Error in misplaced check:", err.response?.data || err.message);
-    res.status(500).json({ error: "AI API call failed", details: err.message });
+    console.error("Server Error:", err);
+    return res.status(500).json({ message: "AI processing failed" });
   }
 };
-
 // GET all orders
 exports.getOrders = async (req, res) => {
   try {
