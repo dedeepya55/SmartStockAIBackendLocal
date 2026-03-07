@@ -324,6 +324,20 @@ exports.productQualityCheck = async (req, res) => {
 
     console.log("AI result:", result);
 
+     if (result.status === "NOT_OK") {
+      await User.updateMany(
+        { role: { $in: ["worker", "manager"] } },
+        {
+          $push: {
+            notifications: {
+              message: "❌ Defective product detected",
+              type: "DEFECT",
+            },
+          },
+        }
+      );
+    }
+
     res.json(result);
 
   } catch (err) {
