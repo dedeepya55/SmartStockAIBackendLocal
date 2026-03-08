@@ -2,6 +2,7 @@
 
 const Product = require("../models/Product");
 const Order = require("../models/Order");
+const ProductBatch = require("../models/ProductBatch")
 
 exports.chatWithAI = async (req, res) => {
   try {
@@ -126,6 +127,68 @@ exports.chatWithAI = async (req, res) => {
 
       return res.json({
         message: `📑 Total orders: ${total}`
+      });
+    }
+    // SEASONAL PRODUCT PREDICTION
+    if (
+        q.includes("summer") ||
+        q.includes("winter") ||
+        q.includes("rainy") ||
+        q.includes("season prediction") ||
+        q.includes("most selling season")
+    ) {
+
+      let season = null;
+
+      if (q.includes("summer")) season = "SUMMER";
+      if (q.includes("winter")) season = "WINTER";
+      if (q.includes("rainy")) season = "RAINY";
+
+      // Aggregation: find top selling products by season
+      const results = await ProductBatch.aggregate([
+        {
+          $match: {
+            season: { $in: [season] }
+          }
+        },
+        {
+          $group: {
+            _id: "$productSKU",
+            totalQuantity: { $sum: "$quantity" }
+          }
+        },
+        {
+          $sort: { totalQuantity: -1 }
+        },
+        {
+          $limit: 5
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "_id",
+            foreignField: "SKU",
+            as: "productInfo"
+          }
+        },
+        {
+          $unwind: {
+            path: "$productInfo",
+            preserveNullAndEmptyArrays: true
+          }
+        },
+        {
+          $project: {
+            product: { $ifNull: ["$productInfo.Title", "Unknown Product"] },
+            SKU: "$_id",
+            predictedSales: "$totalQuantity"
+          }
+        }
+      ]);
+
+      return res.json({
+        message: `📊 Predicted top selling products in ${season}`,
+        data: results
       });
     }
 
