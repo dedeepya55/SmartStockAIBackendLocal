@@ -211,6 +211,10 @@ const monthlyData = sortedYears.map((year) => ({
 
 exports.updateProductBySKU = async (req, res) => {
   try {
+    const userRole = req.user.role; // from auth middleware
+    if (!["admin", "worker"].includes(userRole)) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
     const { sku } = req.params;
 
     // 🔍 Find product

@@ -13,6 +13,7 @@ var app = express();
 const authRoute = require("./routes/authRoute");
 const productRoutes = require('./routes/productRoutes');
 const aiChatRoute = require("./routes/aiChatRoute");
+const productBatchRoutes = require("./routes/productBatchRoutes");
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
@@ -33,6 +34,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(cors({
   origin: process.env.FRONTEND_URL || "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true
 }));
 
@@ -54,6 +56,18 @@ app.use("/results", express.static(path.join(__dirname, "SMARTSTOCK_AI2", "resul
 app.use("/uploads", express.static("public/uploads")); 
 
 app.use("/api/ai", aiChatRoute);
+
+app.use("/api", productBatchRoutes);
+
+const cron = require("node-cron");
+const { notifyExpiringBatches } = require("./controllers/ProductBatchController");
+
+
+// 🔹 Schedule daily at 9:00 AM
+cron.schedule("0 9 * * *", () => {
+  console.log("Running daily expiry check...");
+  notifyExpiringBatches();
+});
 
 // catch 404
 app.use(function(req, res, next) {
