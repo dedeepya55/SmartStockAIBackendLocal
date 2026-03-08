@@ -685,41 +685,62 @@ exports.getYearlyRevenue = async (req, res) => {
   }
 };
 
-// ================= TOP SELLING PRODUCTS =================
 exports.getTopSellingProducts = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 5;
 
     const topProducts = await Order.aggregate([
       { $match: { status: "Delivered" } },
+
+      // Break items array
       { $unwind: "$items" },
+
+      // Convert string product id → ObjectId
+      {
+        $addFields: {
+          "items.product": { $toObjectId: "$items.product" }
+        }
+      },
+
       {
         $group: {
           _id: "$items.product",
-          totalSold: { $sum: "$items.quantity" },
-        },
+          totalSold: { $sum: "$items.quantity" }
+        }
       },
+
       { $sort: { totalSold: -1 } },
       { $limit: limit },
+
       {
         $lookup: {
           from: "products",
           localField: "_id",
           foreignField: "_id",
-          as: "productDetails",
-        },
+          as: "productDetails"
+        }
       },
+
       { $unwind: "$productDetails" },
+
       {
         $project: {
           _id: 0,
           productName: "$productDetails.Title",
-          totalSold: 1,
-        },
-      },
+          totalSold: 1
+        }
+        // $project: {
+        //   _id: 0,
+        //   productDetails: 1,
+        //   totalSold: 1
+        // }
+      }
     ]);
 
+    console.log("Top Products:", topProducts);
+
     res.json(topProducts);
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
